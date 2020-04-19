@@ -11,8 +11,6 @@ import * as objects from 'vs/base/common/objects';
 import * as platform from 'vs/base/common/platform';
 import { dirname } from 'vs/base/common/resources';
 import { URI } from 'vs/base/common/uri';
-import { ICodeEditorService } from 'vs/editor/browser/services/codeEditorService';
-import { getSelectionSearchString } from 'vs/editor/contrib/find/findController';
 import { ToggleCaseSensitiveKeybinding, ToggleRegexKeybinding, ToggleWholeWordKeybinding } from 'vs/editor/contrib/find/findModel';
 import * as nls from 'vs/nls';
 import { ICommandAction, MenuId, MenuRegistry, SyncActionDescriptor } from 'vs/platform/actions/common/actions';
@@ -26,17 +24,13 @@ import { IInstantiationService } from 'vs/platform/instantiation/common/instanti
 import { KeybindingsRegistry, KeybindingWeight } from 'vs/platform/keybinding/common/keybindingsRegistry';
 import { LifecyclePhase } from 'vs/platform/lifecycle/common/lifecycle';
 import { IListService, WorkbenchListFocusContextKey, WorkbenchObjectTree } from 'vs/platform/list/browser/listService';
-import { IQuickOpenService } from 'vs/platform/quickOpen/common/quickOpen';
 import { Registry } from 'vs/platform/registry/common/platform';
-import { defaultQuickOpenContextKey } from 'vs/workbench/browser/parts/quickopen/quickopen';
-import { Extensions as QuickOpenExtensions, IQuickOpenRegistry, QuickOpenHandlerDescriptor } from 'vs/workbench/browser/quickopen';
+import { defaultQuickAccessContextKeyValue } from 'vs/workbench/browser/quickaccess';
 import { Extensions as ActionExtensions, IWorkbenchActionRegistry } from 'vs/workbench/common/actions';
 import { Extensions as WorkbenchExtensions, IWorkbenchContribution, IWorkbenchContributionsRegistry } from 'vs/workbench/common/contributions';
 import { Extensions as ViewExtensions, IViewsRegistry, IViewContainersRegistry, ViewContainerLocation, IViewDescriptorService, IViewsService } from 'vs/workbench/common/views';
 import { getMultiSelectedResources } from 'vs/workbench/contrib/files/browser/files';
 import { ExplorerFolderContext, ExplorerRootContext, FilesExplorerFocusCondition, IExplorerService, VIEWLET_ID as VIEWLET_ID_FILES } from 'vs/workbench/contrib/files/common/files';
-import { OpenAnythingHandler } from 'vs/workbench/contrib/search/browser/openAnythingHandler';
-import { OpenSymbolHandler } from 'vs/workbench/contrib/search/browser/openSymbolHandler';
 import { registerContributions as replaceContributions } from 'vs/workbench/contrib/search/browser/replaceContributions';
 import { clearHistoryCommand, ClearSearchResultsAction, CloseReplaceAction, CollapseDeepestExpandedLevelAction, copyAllCommand, copyMatchCommand, copyPathCommand, FocusNextInputAction, FocusNextSearchResultAction, FocusPreviousInputAction, FocusPreviousSearchResultAction, focusSearchListCommand, getSearchView, openSearchView, OpenSearchViewletAction, RefreshAction, RemoveAction, ReplaceAction, ReplaceAllAction, ReplaceAllInFolderAction, ReplaceInFilesAction, toggleCaseSensitiveCommand, toggleRegexCommand, toggleWholeWordCommand, FindInFilesCommand, ToggleSearchOnTypeAction, ExpandAllAction } from 'vs/workbench/contrib/search/browser/searchActions';
 import { SearchView } from 'vs/workbench/contrib/search/browser/searchView';
@@ -58,6 +52,9 @@ import { ViewPaneContainer } from 'vs/workbench/browser/parts/views/viewPaneCont
 import { IQuickAccessRegistry, Extensions as QuickAccessExtensions } from 'vs/platform/quickinput/common/quickAccess';
 import { SymbolsQuickAccessProvider } from 'vs/workbench/contrib/search/browser/symbolsQuickAccess';
 import { AnythingQuickAccessProvider } from 'vs/workbench/contrib/search/browser/anythingQuickAccess';
+import { IQuickInputService } from 'vs/platform/quickinput/common/quickInput';
+import { AbstractGotoLineQuickAccessProvider } from 'vs/editor/contrib/quickAccess/gotoLineQuickAccess';
+import { GotoSymbolQuickAccessProvider } from 'vs/workbench/contrib/codeEditor/browser/quickaccess/gotoSymbolQuickAccess';
 
 registerSingleton(ISearchWorkbenchService, SearchWorkbenchService, true);
 registerSingleton(ISearchHistoryService, SearchHistoryService, true);
@@ -335,21 +332,37 @@ CommandsRegistry.registerCommand({
 
 CommandsRegistry.registerCommand({
 	id: Constants.RevealInSideBarForSearchResults,
-	handler: (accessor, fileMatch: FileMatch) => {
+	handler: (accessor, args: any) => {
 		const viewletService = accessor.get(IViewletService);
 		const explorerService = accessor.get(IExplorerService);
 		const contextService = accessor.get(IWorkspaceContextService);
-		const uri = fileMatch.resource;
+
+		const searchView = getSearchView(accessor.get(IViewsService));
+		if (!searchView) {
+			return;
+		}
+
+		let fileMatch: FileMatch;
+		if (!(args instanceof FileMatch)) {
+			args = searchView.getControl().getFocus()[0];
+		}
+		if (args instanceof FileMatch) {
+			fileMatch = args;
+		} else {
+			return;
+		}
 
 		viewletService.openViewlet(VIEWLET_ID_FILES, false).then((viewlet) => {
-			const explorerViewContainer = viewlet?.getViewPaneContainer() as ExplorerViewPaneContainer;
+			if (!viewlet) {
+				return;
+			}
 
+			const explorerViewContainer = viewlet.getViewPaneContainer() as ExplorerViewPaneContainer;
+			const uri = fileMatch.resource;
 			if (uri && contextService.isInsideWorkspace(uri)) {
-				const explorerView = explorerViewContainer?.getExplorerView();
-				if (explorerView) {
-					explorerView.setExpanded(true);
-					explorerService.select(uri, true).then(() => explorerView.focus(), onUnexpectedError);
-				}
+				const explorerView = explorerViewContainer.getExplorerView();
+				explorerView.setExpanded(true);
+				explorerService.select(uri, true).then(() => explorerView.focus(), onUnexpectedError);
 			}
 		});
 	}
@@ -478,23 +491,13 @@ class ShowAllSymbolsAction extends Action {
 	constructor(
 		actionId: string,
 		actionLabel: string,
-		@IQuickOpenService private readonly quickOpenService: IQuickOpenService,
-		@ICodeEditorService private readonly editorService: ICodeEditorService
+		@IQuickInputService private readonly quickInputService: IQuickInputService
 	) {
 		super(actionId, actionLabel);
 	}
 
 	async run(): Promise<void> {
-		let prefix = ShowAllSymbolsAction.ALL_SYMBOLS_PREFIX;
-		let inputSelection: { start: number; end: number; } | undefined = undefined;
-		const editor = this.editorService.getFocusedCodeEditor();
-		const word = editor && getSelectionSearchString(editor);
-		if (word) {
-			prefix = prefix + word;
-			inputSelection = { start: 1, end: word.length + 1 };
-		}
-
-		this.quickOpenService.show(prefix, { inputSelection });
+		this.quickInputService.quickAccess.show(ShowAllSymbolsAction.ALL_SYMBOLS_PREFIX);
 	}
 }
 
@@ -507,7 +510,7 @@ const viewContainer = Registry.as<IViewContainersRegistry>(ViewExtensions.ViewCo
 	order: 1
 }, ViewContainerLocation.Sidebar);
 
-const viewDescriptor = { id: VIEW_ID, name: nls.localize('search', "Search"), ctorDescriptor: new SyncDescriptor(SearchView), canToggleVisibility: false, canMoveView: true };
+const viewDescriptor = { id: VIEW_ID, containerIcon: 'codicon-search', name: nls.localize('search', "Search"), ctorDescriptor: new SyncDescriptor(SearchView), canToggleVisibility: false, canMoveView: true };
 
 // Register search default location to sidebar
 Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry).registerViews([viewDescriptor], viewContainer);
@@ -626,41 +629,14 @@ registry.registerWorkbenchAction(SyncActionDescriptor.create(ToggleSearchOnTypeA
 registry.registerWorkbenchAction(SyncActionDescriptor.create(RefreshAction, RefreshAction.ID, RefreshAction.LABEL), 'Search: Refresh', category);
 registry.registerWorkbenchAction(SyncActionDescriptor.create(ClearSearchResultsAction, ClearSearchResultsAction.ID, ClearSearchResultsAction.LABEL), 'Search: Clear Search Results', category);
 
-// Register Quick Open Handler
-Registry.as<IQuickOpenRegistry>(QuickOpenExtensions.Quickopen).registerDefaultQuickOpenHandler(
-	QuickOpenHandlerDescriptor.create(
-		OpenAnythingHandler,
-		OpenAnythingHandler.ID,
-		'',
-		defaultQuickOpenContextKey,
-		nls.localize('openAnythingHandlerDescription', "Go to File")
-	)
-);
-
-Registry.as<IQuickOpenRegistry>(QuickOpenExtensions.Quickopen).registerQuickOpenHandler(
-	QuickOpenHandlerDescriptor.create(
-		OpenSymbolHandler,
-		OpenSymbolHandler.ID,
-		ShowAllSymbolsAction.ALL_SYMBOLS_PREFIX,
-		'inWorkspaceSymbolsPicker',
-		[
-			{
-				prefix: ShowAllSymbolsAction.ALL_SYMBOLS_PREFIX,
-				needsEditor: false,
-				description: nls.localize('openSymbolDescriptionNormal', "Go to Symbol in Workspace")
-			}
-		]
-	)
-);
-
 // Register Quick Access Handler
 const quickAccessRegistry = Registry.as<IQuickAccessRegistry>(QuickAccessExtensions.Quickaccess);
 
 quickAccessRegistry.registerQuickAccessProvider({
 	ctor: AnythingQuickAccessProvider,
 	prefix: AnythingQuickAccessProvider.PREFIX,
-	placeholder: nls.localize('anythingQuickAccessPlaceholder', "Type '?' to get help on the actions you can take from here"),
-	contextKey: defaultQuickOpenContextKey,
+	placeholder: nls.localize('anythingQuickAccessPlaceholder', "Search files by name (append {0} to go to line or {1} to go to symbol)", AbstractGotoLineQuickAccessProvider.PREFIX, GotoSymbolQuickAccessProvider.PREFIX),
+	contextKey: defaultQuickAccessContextKeyValue,
 	helpEntries: [{ description: nls.localize('anythingQuickAccess', "Go to File"), needsEditor: false }]
 });
 
@@ -738,6 +714,16 @@ configurationRegistry.registerConfiguration({
 			description: nls.localize('search.quickOpen.includeHistory', "Whether to include results from recently opened files in the file results for Quick Open."),
 			default: true
 		},
+		'search.quickOpen.history.filterSortOrder': {
+			'type': 'string',
+			'enum': ['default', 'recency'],
+			'default': 'default',
+			'enumDescriptions': [
+				nls.localize('filterSortOrder.default', 'History entries are sorted by relevance based on the filter value used. More relevant entries appear first.'),
+				nls.localize('filterSortOrder.recency', 'History entries are sorted by recency. More recently opened entries appear first.')
+			],
+			'description': nls.localize('filterSortOrder', "Controls sorting order of editor history in quick open when filtering.")
+		},
 		'search.followSymlinks': {
 			type: 'boolean',
 			description: nls.localize('search.followSymlinks', "Controls whether to follow symlinks while searching."),
@@ -802,6 +788,16 @@ configurationRegistry.registerConfiguration({
 			type: 'boolean',
 			default: true,
 			description: nls.localize('search.searchOnType', "Search all files as you type.")
+		},
+		'search.seedWithNearestWord': {
+			type: 'boolean',
+			default: false,
+			description: nls.localize('search.seedWithNearestWord', "Enable seeding search from the word nearest the cursor when the active editor has no selection.")
+		},
+		'search.seedOnFocus': {
+			type: 'boolean',
+			default: false,
+			description: nls.localize('search.seedOnFocus', "Update workspace seach query to the editor's selected text when focusing the search view. This happens either on click or when triggering the `workbench.views.search.focus` command.")
 		},
 		'search.searchOnTypeDebouncePeriod': {
 			type: 'number',

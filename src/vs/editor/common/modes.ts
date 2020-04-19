@@ -417,9 +417,9 @@ export interface CompletionItemLabel {
 	name: string;
 
 	/**
-	 * The signature without the return type. Render after `name`.
+	 * The parameters without the return type. Render after `name`.
 	 */
-	signature?: string;
+	parameters?: string;
 
 	/**
 	 * The fully qualified name, like package name or file path. Rendered after `signature`.
@@ -697,6 +697,12 @@ export interface SignatureInformation {
 	 * The parameters of this signature.
 	 */
 	parameters: ParameterInformation[];
+	/**
+	 * Index of the active parameter.
+	 *
+	 * If provided, this is used in place of `SignatureHelp.activeSignature`.
+	 */
+	activeParameter?: number;
 }
 /**
  * Signature help represents the signature of something

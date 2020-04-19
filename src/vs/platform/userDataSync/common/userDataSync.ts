@@ -125,7 +125,7 @@ export interface IUserDataSyncStore {
 }
 
 export function getUserDataSyncStore(productService: IProductService, configurationService: IConfigurationService): IUserDataSyncStore | undefined {
-	const value = productService[CONFIGURATION_SYNC_STORE_KEY] || configurationService.getValue<{ url: string, authenticationProviderId: string }>(CONFIGURATION_SYNC_STORE_KEY);
+	const value = configurationService.getValue<{ url: string, authenticationProviderId: string }>(CONFIGURATION_SYNC_STORE_KEY) || productService[CONFIGURATION_SYNC_STORE_KEY];
 	if (value && value.url && value.authenticationProviderId) {
 		return {
 			url: joinPath(URI.parse(value.url), 'v1'),
@@ -231,9 +231,13 @@ export interface ISyncExtension {
 	disabled?: boolean;
 }
 
+export interface IStorageValue {
+	version: number;
+	value: string;
+}
+
 export interface IGlobalState {
-	argv: IStringDictionary<any>;
-	storage: IStringDictionary<any>;
+	storage: IStringDictionary<IStorageValue>;
 }
 
 export const enum SyncStatus {
@@ -250,6 +254,11 @@ export interface ISyncResourceHandle {
 
 export type Conflict = { remote: URI, local: URI };
 
+export interface ISyncPreviewResult {
+	readonly hasLocalChanged: boolean;
+	readonly hasRemoteChanged: boolean;
+}
+
 export interface IUserDataSynchroniser {
 
 	readonly resource: SyncResource;
@@ -264,6 +273,7 @@ export interface IUserDataSynchroniser {
 	sync(ref?: string): Promise<void>;
 	stop(): Promise<void>;
 
+	getSyncPreview(): Promise<ISyncPreviewResult>
 	hasPreviouslySynced(): Promise<boolean>
 	hasLocalData(): Promise<boolean>;
 	resetLocal(): Promise<void>;
@@ -289,6 +299,7 @@ export interface IUserDataSyncEnablementService {
 
 	isEnabled(): boolean;
 	setEnablement(enabled: boolean): void;
+	canToggleEnablement(): boolean;
 
 	isResourceEnabled(resource: SyncResource): boolean;
 	setResourceEnablement(resource: SyncResource, enabled: boolean): void;

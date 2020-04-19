@@ -21,7 +21,7 @@ import { Selection } from 'vs/editor/common/core/selection';
 import { ExtensionIdentifier } from 'vs/platform/extensions/common/extensions';
 import * as callh from 'vs/workbench/contrib/callHierarchy/common/callHierarchy';
 import { mixin } from 'vs/base/common/objects';
-import { decodeSemanticTokensDto } from 'vs/workbench/api/common/shared/semanticTokens';
+import { decodeSemanticTokensDto } from 'vs/workbench/api/common/shared/semanticTokensDto';
 
 @extHostNamedCustomer(MainContext.MainThreadLanguageFeatures)
 export class MainThreadLanguageFeatures implements MainThreadLanguageFeaturesShape {
@@ -406,7 +406,7 @@ export class MainThreadLanguageFeatures implements MainThreadLanguageFeaturesSha
 
 		return {
 			label: data[ISuggestDataDtoField.label2] || data[ISuggestDataDtoField.label],
-			kind: data[ISuggestDataDtoField.kind],
+			kind: data[ISuggestDataDtoField.kind] || modes.CompletionItemKind.Property,
 			tags: data[ISuggestDataDtoField.kindModifier],
 			detail: data[ISuggestDataDtoField.detail],
 			documentation: data[ISuggestDataDtoField.documentation],

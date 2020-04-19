@@ -3,24 +3,33 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Event } from 'vs/base/common/event';
 import { IMouseWheelEvent } from 'vs/base/browser/mouseEvent';
-import { BareFontInfo } from 'vs/editor/common/config/fontInfo';
-import { CodeEditorWidget } from 'vs/editor/browser/widget/codeEditorWidget';
-import { OutputRenderer } from 'vs/workbench/contrib/notebook/browser/view/output/outputRenderer';
-import { IOutput, CellKind, IRenderOutput } from 'vs/workbench/contrib/notebook/common/notebookCommon';
-import { RawContextKey } from 'vs/platform/contextkey/common/contextkey';
-import { NotebookViewModel, IModelDecorationsChangeAccessor, CellViewModel } from 'vs/workbench/contrib/notebook/browser/viewModel/notebookViewModel';
-import { FindMatch } from 'vs/editor/common/model';
-import { Range } from 'vs/editor/common/core/range';
-import { ToolBar } from 'vs/base/browser/ui/toolbar/toolbar';
-import { DisposableStore } from 'vs/base/common/lifecycle';
-import { URI } from 'vs/base/common/uri';
+import { IListEvent, IListMouseEvent } from 'vs/base/browser/ui/list/list';
+import { IListOptions, IListStyles } from 'vs/base/browser/ui/list/listWidget';
 import { ProgressBar } from 'vs/base/browser/ui/progressbar/progressbar';
+import { ToolBar } from 'vs/base/browser/ui/toolbar/toolbar';
+import { CancellationTokenSource } from 'vs/base/common/cancellation';
+import { Event } from 'vs/base/common/event';
+import { DisposableStore, IDisposable } from 'vs/base/common/lifecycle';
+import { ScrollEvent } from 'vs/base/common/scrollable';
+import { URI } from 'vs/base/common/uri';
+import { CodeEditorWidget } from 'vs/editor/browser/widget/codeEditorWidget';
+import { BareFontInfo } from 'vs/editor/common/config/fontInfo';
+import { Range } from 'vs/editor/common/core/range';
+import { FindMatch } from 'vs/editor/common/model';
+import { RawContextKey } from 'vs/platform/contextkey/common/contextkey';
+import { NOTEBOOK_EDITABLE_CONTEXT_KEY, NOTEBOOK_EXECUTING_KEY } from 'vs/workbench/contrib/notebook/browser/constants';
+import { OutputRenderer } from 'vs/workbench/contrib/notebook/browser/view/output/outputRenderer';
+import { CellViewModel, IModelDecorationsChangeAccessor, NotebookViewModel } from 'vs/workbench/contrib/notebook/browser/viewModel/notebookViewModel';
+import { NotebookCellTextModel } from 'vs/workbench/contrib/notebook/common/model/notebookCellTextModel';
+import { CellKind, IOutput, IRenderOutput, NotebookCellMetadata, NotebookDocumentMetadata } from 'vs/workbench/contrib/notebook/common/notebookCommon';
+import { Webview } from 'vs/workbench/contrib/webview/browser/webview';
 
 export const KEYBINDING_CONTEXT_NOTEBOOK_FIND_WIDGET_FOCUSED = new RawContextKey<boolean>('notebookFindWidgetFocused', false);
 
 export const NOTEBOOK_EDITOR_FOCUSED = new RawContextKey<boolean>('notebookEditorFocused', false);
+export const NOTEBOOK_EDITOR_EDITABLE = new RawContextKey<boolean>(NOTEBOOK_EDITABLE_CONTEXT_KEY, true);
+export const NOTEBOOK_EDITOR_EXECUTING_NOTEBOOK = new RawContextKey<boolean>(NOTEBOOK_EXECUTING_KEY, false);
 
 export interface NotebookLayoutInfo {
 	width: number;
@@ -34,44 +43,56 @@ export interface NotebookLayoutChangeEvent {
 	fontInfo?: boolean;
 }
 
-export interface NotebookViewLayoutAccessor {
-	layoutInfo: NotebookLayoutInfo | null;
-	onDidChangeLayout: Event<NotebookLayoutChangeEvent>;
-}
-
 export interface CodeCellLayoutInfo {
 	readonly fontInfo: BareFontInfo | null;
 	readonly editorHeight: number;
 	readonly editorWidth: number;
 	readonly totalHeight: number;
+	readonly outputContainerOffset: number;
 	readonly outputTotalHeight: number;
 	readonly indicatorHeight: number;
+	readonly bottomToolbarOffset: number;
 }
 
 export interface CodeCellLayoutChangeEvent {
 	editorHeight?: boolean;
 	outputHeight?: boolean;
 	totalHeight?: boolean;
-	outerWidth?: boolean;
+	outerWidth?: number;
+	font?: BareFontInfo;
 }
 
 export interface MarkdownCellLayoutInfo {
 	readonly fontInfo: BareFontInfo | null;
 	readonly editorWidth: number;
+	readonly bottomToolbarOffset: number;
+	readonly totalHeight: number;
 }
 
 export interface MarkdownCellLayoutChangeEvent {
-	outerWidth?: boolean;
+	font?: BareFontInfo;
+	outerWidth?: number;
+	totalHeight?: number;
 }
 
 export interface ICellViewModel {
+	readonly model: NotebookCellTextModel;
 	readonly id: string;
 	handle: number;
 	uri: URI;
 	cellKind: CellKind;
-	state: CellState;
+	editState: CellEditState;
+	readonly runState: CellRunState;
+	currentTokenSource: CancellationTokenSource | undefined;
 	focusMode: CellFocusMode;
 	getText(): string;
+	metadata: NotebookCellMetadata | undefined;
+	getEvaluatedMetadata(documentMetadata: NotebookDocumentMetadata | undefined): NotebookCellMetadata;
+}
+
+export interface INotebookEditorMouseEvent {
+	readonly event: MouseEvent;
+	readonly target: CellViewModel;
 }
 
 export interface INotebookEditor {
@@ -82,6 +103,8 @@ export interface INotebookEditor {
 	viewModel: NotebookViewModel | undefined;
 
 	isNotebookEditor: boolean;
+
+	getInnerWebview(): Webview | undefined;
 
 	/**
 	 * Focus the notebook editor cell list
@@ -141,6 +164,26 @@ export interface INotebookEditor {
 	focusNotebookCell(cell: ICellViewModel, focusEditor: boolean): void;
 
 	/**
+	 * Execute the given notebook cell
+	 */
+	executeNotebookCell(cell: ICellViewModel): Promise<void>;
+
+	/**
+	 * Cancel the cell execution
+	 */
+	cancelNotebookCellExecution(cell: ICellViewModel): void;
+
+	/**
+	 * Executes all notebook cells in order
+	 */
+	executeNotebook(): Promise<void>;
+
+	/**
+	 * Cancel the notebook execution
+	 */
+	cancelNotebookExecution(): void;
+
+	/**
 	 * Get current active cell
 	 */
 	getActiveCell(): ICellViewModel | undefined;
@@ -148,7 +191,7 @@ export interface INotebookEditor {
 	/**
 	 * Layout the cell with a new height
 	 */
-	layoutNotebookCell(cell: ICellViewModel, height: number): void;
+	layoutNotebookCell(cell: ICellViewModel, height: number): Promise<void>;
 
 	/**
 	 * Render the output in webview layer
@@ -215,6 +258,11 @@ export interface INotebookEditor {
 	 */
 	revealRangeInCenterIfOutsideViewport(cell: ICellViewModel, range: Range): void;
 
+	/**
+	 * Set hidden areas on cell text models.
+	 */
+	setHiddenAreas(_ranges: ICellRange[]): boolean;
+
 	setCellSelection(cell: ICellViewModel, selection: Range): void;
 
 	/**
@@ -234,20 +282,87 @@ export interface INotebookEditor {
 	 * Hide Find Widget
 	 */
 	hideFind(): void;
+
+	/**
+	 * An event emitted on a "mouseup".
+	 * @event
+	 */
+	onMouseUp(listener: (e: INotebookEditorMouseEvent) => void): IDisposable;
+
+	/**
+	 * An event emitted on a "mousedown".
+	 * @event
+	 */
+	onMouseDown(listener: (e: INotebookEditorMouseEvent) => void): IDisposable;
 }
 
-export interface CellRenderTemplate {
+export interface INotebookCellList {
+	onWillScroll: Event<ScrollEvent>;
+	onDidChangeFocus: Event<IListEvent<ICellViewModel>>;
+	onDidChangeContentHeight: Event<number>;
+	scrollTop: number;
+	scrollHeight: number;
+	scrollLeft: number;
+	length: number;
+	rowsContainer: HTMLElement;
+	readonly onDidRemoveOutput: Event<IOutput>;
+	readonly onMouseUp: Event<IListMouseEvent<CellViewModel>>;
+	readonly onMouseDown: Event<IListMouseEvent<CellViewModel>>;
+	detachViewModel(): void;
+	attachViewModel(viewModel: NotebookViewModel): void;
+	clear(): void;
+	focusElement(element: ICellViewModel): void;
+	selectElement(element: ICellViewModel): void;
+	getFocusedElements(): ICellViewModel[];
+	revealElementInView(element: ICellViewModel): void;
+	revealElementInCenterIfOutsideViewport(element: ICellViewModel): void;
+	revealElementInCenter(element: ICellViewModel): void;
+	revealElementLineInView(element: ICellViewModel, line: number): void;
+	revealElementLineInCenter(element: ICellViewModel, line: number): void;
+	revealElementLineInCenterIfOutsideViewport(element: ICellViewModel, line: number): void;
+	revealElementRangeInView(element: ICellViewModel, range: Range): void;
+	revealElementRangeInCenter(element: ICellViewModel, range: Range): void;
+	revealElementRangeInCenterIfOutsideViewport(element: ICellViewModel, range: Range): void;
+	setHiddenAreas(_ranges: ICellRange[]): boolean;
+	domElementOfElement(element: ICellViewModel): HTMLElement | null;
+	focusView(): void;
+	getAbsoluteTopOfElement(element: ICellViewModel): number;
+	triggerScrollFromMouseWheelEvent(browserEvent: IMouseWheelEvent): void;
+	updateElementHeight2(element: ICellViewModel, size: number): void;
+	domFocus(): void;
+	setCellSelection(element: ICellViewModel, range: Range): void;
+	style(styles: IListStyles): void;
+	updateOptions(options: IListOptions<ICellViewModel>): void;
+	layout(height?: number, width?: number): void;
+	dispose(): void;
+}
+
+export interface BaseCellRenderTemplate {
 	container: HTMLElement;
 	cellContainer: HTMLElement;
-	editorContainer?: HTMLElement;
 	toolbar: ToolBar;
-	focusIndicator?: HTMLElement;
-	runToolbar?: ToolBar;
-	editingContainer?: HTMLElement;
-	outputContainer?: HTMLElement;
-	editor?: CodeEditorWidget;
-	progressBar?: ProgressBar;
+	focusIndicator: HTMLElement;
 	disposables: DisposableStore;
+	bottomCellContainer: HTMLElement;
+	toJSON: () => any;
+}
+
+export interface MarkdownCellRenderTemplate extends BaseCellRenderTemplate {
+	editingContainer: HTMLElement;
+	foldingIndicator: HTMLElement;
+}
+
+export interface CodeCellRenderTemplate extends BaseCellRenderTemplate {
+	statusBarContainer: HTMLElement;
+	cellRunStatusContainer: HTMLElement;
+	cellStatusMessageContainer: HTMLElement;
+	cellStatusPlaceholderContainer: HTMLElement;
+	runToolbar: ToolBar;
+	runButtonContainer: HTMLElement;
+	executionOrderLabel: HTMLElement;
+	outputContainer: HTMLElement;
+	editor: CodeEditorWidget;
+	progressBar: ProgressBar;
 }
 
 export interface IOutputTransformContribution {
@@ -274,7 +389,12 @@ export enum CellRevealPosition {
 	Center
 }
 
-export enum CellState {
+export enum CellRunState {
+	Idle,
+	Running
+}
+
+export enum CellEditState {
 	/**
 	 * Default state.
 	 * For markdown cell, it's Markdown preview.
@@ -299,4 +419,84 @@ export enum CursorAtBoundary {
 	Top,
 	Bottom,
 	Both
+}
+
+export interface CellViewModelStateChangeEvent {
+	metadataChanged?: boolean;
+	selectionChanged?: boolean;
+	focusModeChanged?: boolean;
+	runStateChanged?: boolean;
+	editStateChanged?: boolean;
+	languageChanged?: boolean;
+	foldingStateChanged?: boolean;
+	contentChanged?: boolean;
+}
+
+/**
+ * [start, start + length - 1]
+ */
+export interface ICellRange {
+	/**
+	 * zero based index
+	 */
+	start: number;
+	/**
+	 * One based, includes `start`
+	 */
+	length: number;
+}
+
+
+/**
+ * @param _ranges
+ */
+export function reduceCellRanges(_ranges: ICellRange[]): ICellRange[] {
+	if (!_ranges.length) {
+		return [];
+	}
+
+	let ranges = _ranges.sort((a, b) => a.start - b.start);
+	let result: ICellRange[] = [];
+	let currentRangeStart = ranges[0].start;
+	let currentRangeEnd = ranges[0].start + ranges[0].length;
+
+	for (let i = 0, len = ranges.length; i < len; i++) {
+		let range = ranges[i];
+
+		if (range.start > currentRangeEnd) {
+			result.push({ start: currentRangeStart, length: currentRangeEnd - currentRangeStart });
+			currentRangeStart = range.start;
+			currentRangeEnd = range.start + range.length;
+		} else if (range.start + range.length > currentRangeEnd) {
+			currentRangeEnd = range.start + range.length;
+		}
+	}
+
+	result.push({ start: currentRangeStart, length: currentRangeEnd - currentRangeStart });
+	return result;
+}
+
+export function getVisibleCells(cells: CellViewModel[], hiddenRanges: ICellRange[]) {
+	if (!hiddenRanges.length) {
+		return cells;
+	}
+
+	let start = 0;
+	let hiddenRangeIndex = 0;
+	let result: any[] = [];
+
+	while (start < cells.length && hiddenRangeIndex < hiddenRanges.length) {
+		if (start < hiddenRanges[hiddenRangeIndex].start) {
+			result.push(...cells.slice(start, hiddenRanges[hiddenRangeIndex].start));
+		}
+
+		start = hiddenRanges[hiddenRangeIndex].start + hiddenRanges[hiddenRangeIndex].length;
+		hiddenRangeIndex++;
+	}
+
+	if (start < cells.length) {
+		result.push(...cells.slice(start));
+	}
+
+	return result;
 }

@@ -6,21 +6,11 @@
 import { IQuickPick, IQuickPickItem, IQuickNavigateConfiguration } from 'vs/platform/quickinput/common/quickInput';
 import { CancellationToken } from 'vs/base/common/cancellation';
 import { Registry } from 'vs/platform/registry/common/platform';
-import { first, coalesce } from 'vs/base/common/arrays';
-import { startsWith } from 'vs/base/common/strings';
+import { coalesce } from 'vs/base/common/arrays';
 import { IDisposable, toDisposable } from 'vs/base/common/lifecycle';
+import { ItemActivation } from 'vs/base/parts/quickinput/common/quickInput';
 
 export interface IQuickAccessOptions {
-
-	/**
-	 * Allows to control the part of text in the input field that should be selected.
-	 */
-	inputSelection?: { start: number; end: number; };
-
-	/**
-	 * Allows to seed the input with the value that was previously used.
-	 */
-	inputUseLastValue?: boolean;
 
 	/**
 	 * Allows to enable quick navigate support in quick input.
@@ -28,9 +18,16 @@ export interface IQuickAccessOptions {
 	quickNavigateConfiguration?: IQuickNavigateConfiguration;
 
 	/**
-	 * Wether to select the second pick item by default instead of the first.
+	 * Allows to configure a different item activation strategy.
+	 * By default the first item in the list will get activated.
 	 */
-	autoFocus?: { autoFocusSecondEntry?: boolean }
+	itemActivation?: ItemActivation;
+
+	/**
+	 * Wether to take the input value as is and not restore it
+	 * from any existing value if quick access is visible.
+	 */
+	preserveValue?: boolean;
 }
 
 export interface IQuickAccessController {
@@ -41,7 +38,31 @@ export interface IQuickAccessController {
 	show(value?: string, options?: IQuickAccessOptions): void;
 }
 
+export enum DefaultQuickAccessFilterValue {
+
+	/**
+	 * Keep the value as it is given to quick access.
+	 */
+	PRESERVE = 0,
+
+	/**
+	 * Use the value that was used last time something was accepted from the picker.
+	 */
+	LAST = 1
+}
+
 export interface IQuickAccessProvider {
+
+	/**
+	 * Allows to set a default filter value when the provider opens. This can be:
+	 * - `undefined` to not specify any default value
+	 * - `DefaultFilterValues.PRESERVE` to use the value that was last typed
+	 * - `string` for the actual value to use
+	 *
+	 * Note: the default filter will only be used if quick access was opened with
+	 * the exact prefix of the provider. Otherwise the filter value is preserved.
+	 */
+	readonly defaultFilterValue?: string | DefaultQuickAccessFilterValue;
 
 	/**
 	 * Called whenever a prefix was typed into quick pick that matches the provider.
@@ -161,7 +182,7 @@ export class QuickAccessRegistry implements IQuickAccessRegistry {
 	}
 
 	getQuickAccessProvider(prefix: string): IQuickAccessProviderDescriptor | undefined {
-		const result = prefix ? (first(this.providers, provider => startsWith(prefix, provider.prefix)) || undefined) : undefined;
+		const result = prefix ? (this.providers.find(provider => prefix.startsWith(provider.prefix)) || undefined) : undefined;
 
 		return result || this.defaultProvider;
 	}
